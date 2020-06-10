@@ -1,0 +1,1 @@
+Based on article "Improve Your Debugging by Generating Symbols from COM Type Libraries" by Matt Pietrek in Microsoft Systems Journal from March 1999.
