@@ -8,13 +8,14 @@
 #include <ocidl.h>
 #include <imagehlp.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <tchar.h>
-#include "CoClassSymsCallouts.h"
 
 #pragma comment(lib, "Dbghelp.lib")
 #pragma comment(lib, "USER32.lib")
 #pragma comment(lib, "OLE32.lib")
 #pragma comment(lib, "OLEAUT32.lib")
+#pragma comment(lib, "IMAGEHLP.lib")
 
 #ifndef UNICODE
 #error "This file must be compiled as unicode"
@@ -28,10 +29,9 @@ LPCTSTR g_szHelpText = 	_T( "CoClassSyms - Matt Pietrek 1999 for MSJ\n" )
 
 LPCTSTR g_pszFileName= 0;
 
-PFNCCSCALLOUTBEGIN g_pfnCoClassSymsBeginSymbolCallouts = 0;
-PFNCCSADDSYMBOL g_pfnCoClassSymsAddSymbol = 0;
-PFNCCSFINISHED g_pfnCoClassSymsSymbolsFinished = 0;
-					 
+LOADED_IMAGE g_loadedImage;
+FILE * g_pMapFile;
+
 //============================================================================
 
 void ProcessTypeLib( LPCTSTR pszFileName );
@@ -44,8 +44,14 @@ void EnumTypeInfoMembers( LPTYPEINFO pITypeInfo, LPTYPEATTR pTypeAttr,
 void GetTypeInfoName( LPTYPEINFO pITypeInfo, LPTSTR pszName,
 						MEMBERID memid = MEMBERID_NIL );
 
-BOOL HookupToCallouts( void );
-BOOL VAToSectionOffset( PVOID address, WORD &section, DWORD &offset );
+BOOL VAToSectionOffset( PVOID address, SIZE_T &section, SIZE_T &offset );
+
+BOOL CoClassSymsBeginSymbolCallouts( LPCSTR pszExecutable );
+BOOL CoClassSymsAddSymbol(
+		SIZE_T section,
+		SIZE_T offset,
+		PSTR pszSymbolName );
+BOOL CoClassSymsSymbolsFinished( void );
 
 //============================================================================
 
@@ -59,14 +65,6 @@ extern "C" int _tmain( int argc, LPCTSTR * argv )
 		return 0;
 	}
 
-	// Load the DLL that we'll write results to, and get the addresses of
-	// the three callout APIs.
-	if ( !HookupToCallouts() )
-	{
-		_tprintf( _T( "No output DLL found") );
-		return 0;
-	}
-	
 	g_pszFileName = argv[1];	// argv[1] == filename passed on command line
 		
 	ProcessTypeLib( g_pszFileName );
@@ -118,7 +116,7 @@ void EnumTypeLib( LPTYPELIB pITypeLib )
 		}
 	}
 
-	g_pfnCoClassSymsSymbolsFinished();
+	CoClassSymsSymbolsFinished();
 
 }
 
@@ -203,11 +201,11 @@ void EnumTypeInfoMembers( 	LPTYPEINFO pITypeInfo,	// The ITypeInfo to enum.
 		char szFileName[MAX_PATH];
 		wcstombs( szFileName, g_pszFileName, MAX_PATH );
 		
-		fCalledBeginCallout = g_pfnCoClassSymsBeginSymbolCallouts(szFileName);
+		fCalledBeginCallout = CoClassSymsBeginSymbolCallouts(szFileName);
 	}
 
 	// Make a pointer to the vtable.	
-	PBYTE pVTable = (PBYTE)*(PDWORD)(lpUnknown);
+	PBYTE pVTable = (PBYTE)*(PSIZE_T)(lpUnknown);
 
 	if ( 0 == pTypeAttr->cFuncs )	// Make sure at least one method!
 		return;
@@ -229,7 +227,7 @@ void EnumTypeInfoMembers( 	LPTYPEINFO pITypeInfo,	// The ITypeInfo to enum.
 		GetTypeInfoName( pITypeInfo, pszMemberName, pFuncDesc->memid );
 
 		// Index into the vtable to retrieve the method's virtual address
-		DWORD pFunction = *(PDWORD)(pVTable + pFuncDesc->oVft);
+		SIZE_T pFunction = *(PSIZE_T)(pVTable + pFuncDesc->oVft);
 
 		// Created the basic form of the symbol name in interface::method
 		// form using ANSI characters
@@ -251,11 +249,11 @@ void EnumTypeInfoMembers( 	LPTYPEINFO pITypeInfo,	// The ITypeInfo to enum.
 					
 
 		// Convert the virtual address to a logical address
-		unsigned short section;
-		unsigned long offset;
+		SIZE_T section;
+		SIZE_T offset;
 		
 		if ( VAToSectionOffset((PVOID)pFunction, section, offset) )
-			g_pfnCoClassSymsAddSymbol( section, offset, pszMungedName );
+			CoClassSymsAddSymbol( section, offset, pszMungedName );
 		
 		pITypeInfo->ReleaseFuncDesc( pFuncDesc );						
 	}
@@ -284,44 +282,93 @@ void GetTypeInfoName( LPTYPEINFO pITypeInfo, LPTSTR pszName, MEMBERID memid )
 	SysFreeString( pszTypeInfoName );
 }
 
-//=============================================================================
-// Hook up to one of the CoClassSymCallout DLLs via LoadLibrary/GetProcAddress
-//=============================================================================
-BOOL HookupToCallouts( void )
+BOOL CoClassSymsBeginSymbolCallouts( LPCSTR pszExecutable )
 {
-	// First try to load the DLL that will make a .DBG file
-	HMODULE hModCalloutDLL = LoadLibrary( _T("CoClassSymsDBGFile.DLL") );
+	if ( !MapAndLoad( (LPSTR)pszExecutable, 0, &g_loadedImage, FALSE, TRUE ) )
+	{
+		printf( "Unable to access or load executable\n" );
+		return 0;
+	}
 
-	// If the first DLL wasn't found, try the DLL that generates a .MAP file
-	if ( !hModCalloutDLL )
-		hModCalloutDLL = LoadLibrary( _T("CoClassSymsMapFile.DLL") );
-		
-	if ( !hModCalloutDLL )
+	char szExeBaseName[MAX_PATH];
+	char szMapFileName[MAX_PATH];
+	_splitpath( pszExecutable, 0, 0, szExeBaseName, 0 );
+	sprintf( szMapFileName, "%s.MAP", szExeBaseName );
+	
+	g_pMapFile = fopen( szMapFileName, "wt" );
+	if ( !g_pMapFile )
 		return FALSE;
-		
 
-	g_pfnCoClassSymsBeginSymbolCallouts = (PFNCCSCALLOUTBEGIN)
-			GetProcAddress( hModCalloutDLL,	"CoClassSymsBeginSymbolCallouts" );
-		
-	g_pfnCoClassSymsAddSymbol = (PFNCCSADDSYMBOL)
-			GetProcAddress( hModCalloutDLL, "CoClassSymsAddSymbol" );
+	fprintf( g_pMapFile,
+			" Start         Length     Name                   Class\n" );
+
+	PIMAGE_SECTION_HEADER pSectHdr = g_loadedImage.Sections;
 			
-	g_pfnCoClassSymsSymbolsFinished = (PFNCCSFINISHED)
-			GetProcAddress( hModCalloutDLL, "CoClassSymsSymbolsFinished" );
+	for ( 	unsigned i=1;
+			i <= g_loadedImage.NumberOfSections;
+			i++, pSectHdr++ )
+	{
+		fprintf( 	g_pMapFile,
+					" %04X:00000000 %08XH %-23.8hs %s\n",
+					i, pSectHdr->Misc.VirtualSize, pSectHdr->Name,
+					pSectHdr->Characteristics & IMAGE_SCN_CNT_CODE
+						? "CODE" : "DATA" );
+	}
 
-	// Make sure all three functions were found.  Otherwise, return failure.
-	if (!g_pfnCoClassSymsBeginSymbolCallouts ||
-		!g_pfnCoClassSymsAddSymbol ||
-		!g_pfnCoClassSymsAddSymbol )
+	fprintf( g_pMapFile, 
+		"\n  Address         Publics by Value              Rva+Base\n\n");	
+
+	return TRUE;
+}
+
+BOOL CoClassSymsAddSymbol(
+		SIZE_T section,
+		SIZE_T offset,
+		PSTR pszSymbolName )
+{
+	if ( !g_pMapFile )
 		return FALSE;
+
+	fprintf( g_pMapFile, " %08IX:%08IX       %-32s\n",
+			 section, offset, pszSymbolName );
+				
+	return true;
+}
 		
+BOOL CoClassSymsSymbolsFinished( void )
+{
+	if ( !g_pMapFile )
+		return FALSE;
+	
+	DWORD entryRVA
+		= g_loadedImage.FileHeader->OptionalHeader.AddressOfEntryPoint;
+	
+	PIMAGE_SECTION_HEADER pSectHdr;
+	
+	pSectHdr = ImageRvaToSection( 	g_loadedImage.FileHeader,
+									g_loadedImage.MappedAddress,
+									entryRVA );
+	if ( pSectHdr )
+	{
+		// Pointer math below!!!
+		WORD section = (WORD)(pSectHdr - g_loadedImage.Sections) +1;
+		DWORD offset = entryRVA - pSectHdr->VirtualAddress;
+		
+		fprintf( g_pMapFile, "\n entry point at        %04X:%08X\n",
+			 	 section, offset );
+	}
+	
+	fclose( g_pMapFile );
+
+	UnMapAndLoad( &g_loadedImage );		// Undo the MapAndLoad call
+	
 	return TRUE;
 }
 
 //=============================================================================
 // Convert a linear (virtual) address into a logical (section:offset) address
 //=============================================================================
-BOOL VAToSectionOffset( PVOID address, WORD &section, DWORD &offset )
+BOOL VAToSectionOffset( PVOID address, SIZE_T &section, SIZE_T &offset )
 {
 	MEMORY_BASIC_INFORMATION mbi;
 
@@ -337,7 +384,7 @@ BOOL VAToSectionOffset( PVOID address, WORD &section, DWORD &offset )
 		return FALSE;
 		
 	// Calculate relative virtual address (RVA)
-	DWORD rva = (DWORD)address - (DWORD)hModule;
+	SIZE_T rva = (SIZE_T)address - (SIZE_T)hModule;
 
 	PIMAGE_SECTION_HEADER pSectHdr;
 
