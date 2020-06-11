@@ -44,10 +44,12 @@ void EnumTypeInfoMembers( LPTYPEINFO pITypeInfo, LPTYPEATTR pTypeAttr,
 void GetTypeInfoName( LPTYPEINFO pITypeInfo, LPTSTR pszName,
 						MEMBERID memid = MEMBERID_NIL );
 
-BOOL VAToSectionOffset( PVOID address, SIZE_T &section, SIZE_T &offset );
+BOOL VAToSectionOffset( PVOID address, SIZE_T &rva, SIZE_T &section, SIZE_T &offset );
 
 BOOL CoClassSymsBeginSymbolCallouts( LPCSTR pszExecutable );
 BOOL CoClassSymsAddSymbol(
+		SIZE_T pFunction,
+		SIZE_T rva,
 		SIZE_T section,
 		SIZE_T offset,
 		PSTR pszSymbolName );
@@ -249,11 +251,12 @@ void EnumTypeInfoMembers( 	LPTYPEINFO pITypeInfo,	// The ITypeInfo to enum.
 					
 
 		// Convert the virtual address to a logical address
+		SIZE_T rva;
 		SIZE_T section;
 		SIZE_T offset;
 		
-		if ( VAToSectionOffset((PVOID)pFunction, section, offset) )
-			CoClassSymsAddSymbol( section, offset, pszMungedName );
+		if ( VAToSectionOffset((PVOID)pFunction, rva, section, offset) )
+			CoClassSymsAddSymbol( pFunction, rva, section, offset, pszMungedName );
 		
 		pITypeInfo->ReleaseFuncDesc( pFuncDesc );						
 	}
@@ -316,12 +319,14 @@ BOOL CoClassSymsBeginSymbolCallouts( LPCSTR pszExecutable )
 	}
 
 	fprintf( g_pMapFile, 
-		"\n  Address         Publics by Value              Rva+Base\n\n");	
+		"\n  pFunction        RVA                Address         Publics by Value              Rva+Base\n\n");	
 
 	return TRUE;
 }
 
 BOOL CoClassSymsAddSymbol(
+		SIZE_T pFunction,
+		SIZE_T rva,
 		SIZE_T section,
 		SIZE_T offset,
 		PSTR pszSymbolName )
@@ -329,8 +334,8 @@ BOOL CoClassSymsAddSymbol(
 	if ( !g_pMapFile )
 		return FALSE;
 
-	fprintf( g_pMapFile, " %08IX:%08IX       %-32s\n",
-			 section, offset, pszSymbolName );
+	fprintf( g_pMapFile, "%016IX %016IX %08IX:%08IX       %-32s\n",
+			 pFunction, rva, section, offset, pszSymbolName );
 				
 	return true;
 }
@@ -368,7 +373,7 @@ BOOL CoClassSymsSymbolsFinished( void )
 //=============================================================================
 // Convert a linear (virtual) address into a logical (section:offset) address
 //=============================================================================
-BOOL VAToSectionOffset( PVOID address, SIZE_T &section, SIZE_T &offset )
+BOOL VAToSectionOffset( PVOID address, SIZE_T &rva, SIZE_T &section, SIZE_T &offset )
 {
 	MEMORY_BASIC_INFORMATION mbi;
 
@@ -384,7 +389,7 @@ BOOL VAToSectionOffset( PVOID address, SIZE_T &section, SIZE_T &offset )
 		return FALSE;
 		
 	// Calculate relative virtual address (RVA)
-	SIZE_T rva = (SIZE_T)address - (SIZE_T)hModule;
+	rva = (SIZE_T)address - (SIZE_T)hModule;
 
 	PIMAGE_SECTION_HEADER pSectHdr;
 
