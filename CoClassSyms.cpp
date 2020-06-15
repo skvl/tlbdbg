@@ -31,6 +31,7 @@ LPCTSTR g_pszFileName= 0;
 
 LOADED_IMAGE g_loadedImage;
 FILE * g_pMapFile;
+SIZE_T g_iSymbolsCount = 0;
 
 //============================================================================
 
@@ -46,7 +47,7 @@ void GetTypeInfoName( LPTYPEINFO pITypeInfo, LPTSTR pszName,
 
 BOOL VAToSectionOffset( PVOID address, SIZE_T &rva, SIZE_T &section, SIZE_T &offset );
 
-BOOL CoClassSymsBeginSymbolCallouts( LPCSTR pszExecutable );
+BOOL CoClassSymsBeginSymbolCallouts( LPTYPELIB pITypeLib, LPCSTR pszExecutable );
 BOOL CoClassSymsAddSymbol(
 		SIZE_T pFunction,
 		SIZE_T rva,
@@ -102,6 +103,11 @@ void ProcessTypeLib( LPCTSTR pszFileName )
 //============================================================================
 void EnumTypeLib( LPTYPELIB pITypeLib )
 {
+	char szFileName[MAX_PATH];
+	wcstombs( szFileName, g_pszFileName, MAX_PATH );
+	
+	CoClassSymsBeginSymbolCallouts(pITypeLib, szFileName);
+
 	UINT tiCount = pITypeLib->GetTypeInfoCount();
 	
 	for ( UINT i = 0; i < tiCount; i++ )
@@ -144,6 +150,8 @@ void ProcessTypeInfo( LPTYPEINFO pITypeInfo )
 			
 			if ( S_OK == hr )
 				ProcessReferencedTypeInfo( pITypeInfo, pTypeAttr, hRefType );
+			else
+				printf("WARNING Failed to GetRefTypeOfImplType!\n");
  		}
 	}
 	
@@ -163,25 +171,102 @@ void ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo_CoClass,
 	
 	HRESULT hr = pITypeInfo_CoClass->GetRefTypeInfo(hRefType, &pIRefTypeInfo);
 	if ( S_OK != hr )
+	{
+		printf("WARNING Failed to GetRefTypeInfo!\n");
 		return;
+	}
 
 	LPTYPEATTR pRefTypeAttr;
 	pIRefTypeInfo->GetTypeAttr( &pRefTypeAttr );
 
 	LPUNKNOWN pIUnknown = 0;
-
+/*
+	LPOLESTR pTypeAttrGUID;
+	StringFromCLSID(pTypeAttr->guid, &pTypeAttrGUID);
+	LPOLESTR pRefTypeAttrGUID;
+	StringFromCLSID(pRefTypeAttr->guid, &pRefTypeAttrGUID);
+	TCHAR pszInterfaceName[256];
+	GetTypeInfoName( pITypeInfo_CoClass, pszInterfaceName );
+	_tprintf( _T("\t* %-30s: TYPEKIND %d, CLSID %s, RefTypeGUID %s\n\n"), pszInterfaceName, pTypeAttr->typekind, pTypeAttrGUID, pRefTypeAttrGUID);
+*/
 	hr = CoCreateInstance( 	pTypeAttr->guid,
 							0,					// pUnkOuter
 							CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER,
 							pRefTypeAttr->guid,
 							(LPVOID *)&pIUnknown );
-
 	if ( (S_OK == hr) && pIUnknown )
 	{
+		/**********************
+		 *        DEBUG       *
+		 **********************/
+		{
+			printf("\n\n=============== STR ===============\n\n\n");
+			ITypeLib *pITypeLib = nullptr;
+			UINT pIndex = 0;
+			hr = pITypeInfo_CoClass->GetContainingTypeLib(&pITypeLib, &pIndex);
+			UINT tiCount = pITypeLib->GetTypeInfoCount();
+			
+			for ( UINT i = 0; i < tiCount; i++ )
+			{
+				LPTYPEINFO pITypeInfo_dbg;
+
+				HRESULT hr = pITypeLib->GetTypeInfo( i, &pITypeInfo_dbg );
+
+				if ( S_OK == hr )
+				{
+					LPTYPEATTR pTypeAttr_dbg;
+					hr = pITypeInfo_dbg->GetTypeAttr( &pTypeAttr_dbg );
+					if ( S_OK != hr )
+						return;
+					
+					if ( pTypeAttr->guid != pTypeAttr_dbg->guid &&
+					     ( TKIND_COCLASS == pTypeAttr_dbg->typekind ||
+						   TKIND_INTERFACE == pTypeAttr_dbg->typekind ||
+						   TKIND_DISPATCH == pTypeAttr_dbg->typekind) )
+					{
+						for ( unsigned short i = 0; i < pTypeAttr_dbg->cImplTypes; i++ )
+						{
+							HREFTYPE hRefType_dbg;
+
+							hr = pITypeInfo_dbg->GetRefTypeOfImplType( i, &hRefType_dbg );
+							
+							if ( S_OK == hr )
+							{
+								// ProcessReferencedTypeInfo( pITypeInfo_dbg, pTypeAttr_dbg, hRefType_dbg );
+								LPTYPEINFO pIRefTypeInfo_dbg;
+								
+								HRESULT hr = pITypeInfo_dbg->GetRefTypeInfo(hRefType_dbg, &pIRefTypeInfo_dbg);
+								if ( S_OK != hr )
+								{
+									printf("WARNING Failed to GetRefTypeInfo!\n");
+									return;
+								}
+
+								LPTYPEATTR pRefTypeAttr_dbg;
+								pIRefTypeInfo_dbg->GetTypeAttr( &pRefTypeAttr_dbg );
+
+								EnumTypeInfoMembers( pIRefTypeInfo_dbg, pRefTypeAttr_dbg, pIUnknown );
+							}
+							else
+								printf("WARNING Failed to GetRefTypeOfImplType!\n");
+						}
+					}
+					
+					pITypeInfo_dbg->ReleaseTypeAttr( pTypeAttr_dbg );
+									
+					pITypeInfo_dbg->Release();
+				}
+			}
+			printf("\n\n=============== END ===============\n\n\n");
+		} /* DEBUG */
+
 		EnumTypeInfoMembers( pIRefTypeInfo, pRefTypeAttr, pIUnknown );
 
 		pIUnknown->Release();
 	}
+	else
+		printf("\tWARNING Failed to CoCreateInstance!\n");
+
 						
 	pIRefTypeInfo->ReleaseTypeAttr( pRefTypeAttr );
 	pIRefTypeInfo->Release();
@@ -196,21 +281,14 @@ void EnumTypeInfoMembers( 	LPTYPEINFO pITypeInfo,	// The ITypeInfo to enum.
 							LPUNKNOWN lpUnknown		// From CoCreateInstance.
 						)
 {
-	// Only call CoClassSymsBeginSymbolCallout once	
-	static BOOL fCalledBeginCallout = FALSE;
-	if ( FALSE == fCalledBeginCallout )
-	{
-		char szFileName[MAX_PATH];
-		wcstombs( szFileName, g_pszFileName, MAX_PATH );
-		
-		fCalledBeginCallout = CoClassSymsBeginSymbolCallouts(szFileName);
-	}
-
 	// Make a pointer to the vtable.	
 	PBYTE pVTable = (PBYTE)*(PSIZE_T)(lpUnknown);
 
 	if ( 0 == pTypeAttr->cFuncs )	// Make sure at least one method!
+	{
+		printf("WARNING pTypeAttr->cFuncs == 0!\n");
 		return;
+	}
 
 	// Get the name of the ITypeInfo, to use as the interface name in the
 	// symbol names we'll be constructing.
@@ -285,7 +363,7 @@ void GetTypeInfoName( LPTYPEINFO pITypeInfo, LPTSTR pszName, MEMBERID memid )
 	SysFreeString( pszTypeInfoName );
 }
 
-BOOL CoClassSymsBeginSymbolCallouts( LPCSTR pszExecutable )
+BOOL CoClassSymsBeginSymbolCallouts( LPTYPELIB pITypeLib, LPCSTR pszExecutable )
 {
 	if ( !MapAndLoad( (LPSTR)pszExecutable, 0, &g_loadedImage, FALSE, TRUE ) )
 	{
@@ -302,7 +380,7 @@ BOOL CoClassSymsBeginSymbolCallouts( LPCSTR pszExecutable )
 	if ( !g_pMapFile )
 		return FALSE;
 
-	fprintf( g_pMapFile,
+	printf(
 			" Start         Length     Name                   Class\n" );
 
 	PIMAGE_SECTION_HEADER pSectHdr = g_loadedImage.Sections;
@@ -311,15 +389,59 @@ BOOL CoClassSymsBeginSymbolCallouts( LPCSTR pszExecutable )
 			i <= g_loadedImage.NumberOfSections;
 			i++, pSectHdr++ )
 	{
-		fprintf( 	g_pMapFile,
+		printf(
 					" %04X:00000000 %08XH %-23.8hs %s\n",
 					i, pSectHdr->Misc.VirtualSize, pSectHdr->Name,
 					pSectHdr->Characteristics & IMAGE_SCN_CNT_CODE
 						? "CODE" : "DATA" );
 	}
 
-	fprintf( g_pMapFile, 
+	printf(
 		"\n  pFunction        RVA                Address         Publics by Value              Rva+Base\n\n");	
+
+	fprintf( g_pMapFile, "{\n");
+	TLIBATTR *pTypeLibAttrs = nullptr;
+	BSTR pTypeLibName = nullptr;
+	BSTR pTypeLibDoc = nullptr;
+	if (S_OK != pITypeLib->GetLibAttr(&pTypeLibAttrs) ||
+		S_OK != pITypeLib->GetDocumentation(-1, &pTypeLibName, &pTypeLibDoc, nullptr, nullptr))
+	{
+		_tprintf( _T("GetLibAttr failed or GetDocumentation\n"));
+	}
+	else
+	{
+		LPOLESTR guidString;
+		StringFromCLSID(pTypeLibAttrs->guid, &guidString);
+
+		char szLibGUID[MAX_PATH];
+		wcstombs( szLibGUID, guidString, MAX_PATH );
+		char szLibName[MAX_PATH];
+		wcstombs( szLibName, pTypeLibName, MAX_PATH );
+
+
+		_tprintf( _T("TypeLib \"%s\"\n\"%s\"\nCLSID: %s\n\n"), pTypeLibName, pTypeLibDoc, guidString);
+		fprintf( g_pMapFile,
+				 "    \"metadata\": {\n"
+				 "        \"name\": \"%s\",\n"
+				 "        \"guid\": \"%s\"",
+				 szLibName, szLibGUID);
+		if (pTypeLibDoc)
+		{
+			char szLibDoc[MAX_PATH];
+			wcstombs( szLibDoc, pTypeLibDoc, MAX_PATH );
+			fprintf ( g_pMapFile, ",\n        \"doc\": \"%s\"\n", szLibDoc);
+		}
+		else
+			fprintf( g_pMapFile, "\n");
+		fprintf( g_pMapFile, "},\n");
+
+		// ensure memory is freed
+		SysFreeString(pTypeLibName);
+		SysFreeString(pTypeLibDoc);
+		CoTaskMemFree(guidString);
+		pITypeLib->ReleaseTLibAttr(pTypeLibAttrs);
+	}
+	fprintf( g_pMapFile, "    \"symbols\": {\n");
 
 	return TRUE;
 }
@@ -334,8 +456,11 @@ BOOL CoClassSymsAddSymbol(
 	if ( !g_pMapFile )
 		return FALSE;
 
-	fprintf( g_pMapFile, "%016IX %016IX %08IX:%08IX       %-32s\n",
+	printf( "%016IX %016IX %08IX:%08IX       %-32s\n",
 			 pFunction, rva, section, offset, pszSymbolName );
+	if (g_iSymbolsCount++)
+		fprintf( g_pMapFile, ",\n");
+	fprintf( g_pMapFile, "        \"%s\": { \"address\": %Iu }", pszSymbolName, rva);
 				
 	return true;
 }
@@ -359,10 +484,11 @@ BOOL CoClassSymsSymbolsFinished( void )
 		WORD section = (WORD)(pSectHdr - g_loadedImage.Sections) +1;
 		DWORD offset = entryRVA - pSectHdr->VirtualAddress;
 		
-		fprintf( g_pMapFile, "\n entry point at        %04X:%08X\n",
+		printf( "\n entry point at        %04X:%08X\n",
 			 	 section, offset );
 	}
 	
+	fprintf( g_pMapFile, "\n    }\n}\n");
 	fclose( g_pMapFile );
 
 	UnMapAndLoad( &g_loadedImage );		// Undo the MapAndLoad call
@@ -386,7 +512,10 @@ BOOL VAToSectionOffset( PVOID address, SIZE_T &rva, SIZE_T &section, SIZE_T &off
 	// Use IMAGEHLP API to get a pointer to the PE header.
 	PIMAGE_NT_HEADERS pNtHeaders = ImageNtHeader(hModule);
 	if ( !pNtHeaders )
+	{
+		printf("WARNING FAiled to ImageNtHeader!\n");
 		return FALSE;
+	}
 		
 	// Calculate relative virtual address (RVA)
 	rva = (SIZE_T)address - (SIZE_T)hModule;
@@ -396,7 +525,10 @@ BOOL VAToSectionOffset( PVOID address, SIZE_T &rva, SIZE_T &section, SIZE_T &off
 	// Use another IMAGEHLP API to find the section containing the RVA
 	pSectHdr = ImageRvaToSection( pNtHeaders, hModule, rva );
 	if ( !pSectHdr )
+	{
+		printf("WARNING FAiled to ImageRvaToSection!\n");
 		return FALSE;
+	}
 		
 	// Figure out the section number.  Warning: pointer math below!!!
 	section = (WORD)(pSectHdr - IMAGE_FIRST_SECTION(pNtHeaders)) + 1;

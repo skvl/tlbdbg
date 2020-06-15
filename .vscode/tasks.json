@@ -20,6 +20,7 @@
             "command": "meson",
             "args": [
                 "--buildtype=debug",
+                "-Db_vscrt=mtd",
                 "builddir"
             ],
             "group": "build",
@@ -31,6 +32,7 @@
             "command": "meson",
             "args": [
                 "--buildtype=release",
+                "-Db_vscrt=mt",
                 "builddir"
             ],
             "group": "build",
@@ -43,6 +45,7 @@
             "args": [
                 "--reconfigure",
                 "--buildtype=debug",
+                "-Db_vscrt=mtd",
                 "builddir"
             ],
             "group": "build",
@@ -55,6 +58,7 @@
             "args": [
                 "--reconfigure",
                 "--buildtype=release",
+                "-Db_vscrt=mt",
                 "builddir"
             ],
             "group": "build",
