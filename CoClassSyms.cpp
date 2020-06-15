@@ -37,8 +37,8 @@ SIZE_T g_iSymbolsCount = 0;
 
 void ProcessTypeLib( LPCTSTR pszFileName );
 void EnumTypeLib( LPTYPELIB pITypeLib );
-void ProcessTypeInfo( LPTYPEINFO pITypeInfo );
-void ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo, LPTYPEATTR pTypeAttr,
+bool ProcessTypeInfo( LPTYPEINFO pITypeInfo );
+bool ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo, LPTYPEATTR pTypeAttr,
 								HREFTYPE hRefType );
 void EnumTypeInfoMembers( LPTYPEINFO pITypeInfo, LPTYPEATTR pTypeAttr,
 							LPUNKNOWN lpUnknown );
@@ -118,9 +118,12 @@ void EnumTypeLib( LPTYPELIB pITypeLib )
 
 		if ( S_OK == hr )
 		{
-			ProcessTypeInfo( pITypeInfo );
+			bool rc = ProcessTypeInfo( pITypeInfo );
 							
 			pITypeInfo->Release();
+
+			if (rc)
+				break;
 		}
 	}
 
@@ -131,14 +134,15 @@ void EnumTypeLib( LPTYPELIB pITypeLib )
 //============================================================================
 // Top level handling code for a single ITypeInfo extracted from a typelib
 //============================================================================
-void ProcessTypeInfo( LPTYPEINFO pITypeInfo )
+bool ProcessTypeInfo( LPTYPEINFO pITypeInfo )
 {
+	bool rc = false;
 	HRESULT hr;
 		
 	LPTYPEATTR pTypeAttr;
 	hr = pITypeInfo->GetTypeAttr( &pTypeAttr );
 	if ( S_OK != hr )
-		return;
+		return rc;
 	
 	if ( TKIND_COCLASS == pTypeAttr->typekind )
 	{
@@ -149,13 +153,14 @@ void ProcessTypeInfo( LPTYPEINFO pITypeInfo )
 			hr = pITypeInfo->GetRefTypeOfImplType( i, &hRefType );
 			
 			if ( S_OK == hr )
-				ProcessReferencedTypeInfo( pITypeInfo, pTypeAttr, hRefType );
+				rc = ProcessReferencedTypeInfo( pITypeInfo, pTypeAttr, hRefType );
 			else
 				printf("WARNING Failed to GetRefTypeOfImplType!\n");
  		}
 	}
 	
 	pITypeInfo->ReleaseTypeAttr( pTypeAttr );
+	return rc;
 }
 
 //============================================================================
@@ -163,17 +168,18 @@ void ProcessTypeInfo( LPTYPEINFO pITypeInfo )
 // referenced (HREFTYPE) TKIND_DISPATCH or TKIND_INTERFACE.  Pass that
 // ITypeInfo to EnumTypeInfoMembers.
 //============================================================================
-void ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo_CoClass,
+bool ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo_CoClass,
 								LPTYPEATTR pTypeAttr,
 								HREFTYPE hRefType )
 {
+	bool rc = false;
 	LPTYPEINFO pIRefTypeInfo;
 	
 	HRESULT hr = pITypeInfo_CoClass->GetRefTypeInfo(hRefType, &pIRefTypeInfo);
 	if ( S_OK != hr )
 	{
 		printf("WARNING Failed to GetRefTypeInfo!\n");
-		return;
+		return rc;
 	}
 
 	LPTYPEATTR pRefTypeAttr;
@@ -217,9 +223,9 @@ void ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo_CoClass,
 					LPTYPEATTR pTypeAttr_dbg;
 					hr = pITypeInfo_dbg->GetTypeAttr( &pTypeAttr_dbg );
 					if ( S_OK != hr )
-						return;
+						continue;
 					
-					if ( pTypeAttr->guid != pTypeAttr_dbg->guid &&
+					if ( /* pTypeAttr->guid != pTypeAttr_dbg->guid && */
 					     ( TKIND_COCLASS == pTypeAttr_dbg->typekind ||
 						   TKIND_INTERFACE == pTypeAttr_dbg->typekind ||
 						   TKIND_DISPATCH == pTypeAttr_dbg->typekind) )
@@ -240,7 +246,7 @@ void ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo_CoClass,
 								if ( S_OK != hr )
 								{
 									printf("WARNING Failed to GetRefTypeInfo!\n");
-									return;
+									continue;
 								}
 
 								LPTYPEATTR pRefTypeAttr_dbg;
@@ -262,9 +268,10 @@ void ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo_CoClass,
 			printf("\n\n=============== END ===============\n\n\n");
 		} /* DEBUG */
 
-		EnumTypeInfoMembers( pIRefTypeInfo, pRefTypeAttr, pIUnknown );
+		// EnumTypeInfoMembers( pIRefTypeInfo, pRefTypeAttr, pIUnknown );
 
 		pIUnknown->Release();
+		rc = true;
 	}
 	else
 		printf("\tWARNING Failed to CoCreateInstance!\n");
@@ -272,6 +279,8 @@ void ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo_CoClass,
 						
 	pIRefTypeInfo->ReleaseTypeAttr( pRefTypeAttr );
 	pIRefTypeInfo->Release();
+
+	return rc;
 }
 
 //============================================================================
