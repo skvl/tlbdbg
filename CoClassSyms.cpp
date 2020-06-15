@@ -31,6 +31,7 @@ LPCTSTR g_pszFileName= 0;
 
 LOADED_IMAGE g_loadedImage;
 FILE * g_pMapFile;
+SIZE_T g_iInterfacesCount = 0;
 SIZE_T g_iSymbolsCount = 0;
 
 //============================================================================
@@ -306,8 +307,28 @@ void EnumTypeInfoMembers( 	LPTYPEINFO pITypeInfo,	// The ITypeInfo to enum.
 	TCHAR pszInterfaceName[256];
 	GetTypeInfoName( pITypeInfo, pszInterfaceName );
 
+	LPOLESTR guidString;
+	StringFromCLSID(pTypeAttr->guid, &guidString);
+
+	char szLibGUID[MAX_PATH];
+	wcstombs( szLibGUID, guidString, MAX_PATH );
+
+	if (g_iInterfacesCount++)
+		fprintf( g_pMapFile, ",\n");
+
+	char pszInterfaceName_[512];
+	wsprintfA(	pszInterfaceName_,"%ls",
+				pszInterfaceName );
+	fprintf( g_pMapFile,
+				"        \"%s\": {\n"
+				"            \"guid\": \"%s\",\n"
+				"            \"symbols\": {\n",
+				pszInterfaceName_, szLibGUID);
+
 	// Enumerate through each method, obtain it's name, address, and ship the
 	// info off to CoClassSymsAddSymbol()
+	g_iSymbolsCount = 0;
+
 	for ( unsigned i = 0; i < pTypeAttr->cFuncs; i++ )
 	{
 		FUNCDESC * pFuncDesc;
@@ -349,6 +370,9 @@ void EnumTypeInfoMembers( 	LPTYPEINFO pITypeInfo,	// The ITypeInfo to enum.
 		
 		pITypeInfo->ReleaseFuncDesc( pFuncDesc );						
 	}
+	fprintf( g_pMapFile,
+				"\n            }\n"
+				"        }");
 }
 
 //============================================================================
@@ -385,7 +409,7 @@ BOOL CoClassSymsBeginSymbolCallouts( LPTYPELIB pITypeLib, LPCSTR pszExecutable )
 	char szExeBaseName[MAX_PATH];
 	char szMapFileName[MAX_PATH];
 	_splitpath( pszExecutable, 0, 0, szExeBaseName, 0 );
-	sprintf( szMapFileName, "%s.MAP", szExeBaseName );
+	sprintf( szMapFileName, "%s.json", szExeBaseName );
 	
 	g_pMapFile = fopen( szMapFileName, "wt" );
 	if ( !g_pMapFile )
@@ -429,7 +453,6 @@ BOOL CoClassSymsBeginSymbolCallouts( LPTYPELIB pITypeLib, LPCSTR pszExecutable )
 		char szLibName[MAX_PATH];
 		wcstombs( szLibName, pTypeLibName, MAX_PATH );
 
-
 		_tprintf( _T("TypeLib \"%s\"\n\"%s\"\nCLSID: %s\n\n"), pTypeLibName, pTypeLibDoc, guidString);
 		fprintf( g_pMapFile,
 				 "    \"metadata\": {\n"
@@ -444,7 +467,7 @@ BOOL CoClassSymsBeginSymbolCallouts( LPTYPELIB pITypeLib, LPCSTR pszExecutable )
 		}
 		else
 			fprintf( g_pMapFile, "\n");
-		fprintf( g_pMapFile, "},\n");
+		fprintf( g_pMapFile, "    },\n");
 
 		// ensure memory is freed
 		SysFreeString(pTypeLibName);
@@ -452,7 +475,7 @@ BOOL CoClassSymsBeginSymbolCallouts( LPTYPELIB pITypeLib, LPCSTR pszExecutable )
 		CoTaskMemFree(guidString);
 		pITypeLib->ReleaseTLibAttr(pTypeLibAttrs);
 	}
-	fprintf( g_pMapFile, "    \"symbols\": {\n");
+	fprintf( g_pMapFile, "    \"interfaces\": {\n");
 
 	return TRUE;
 }
@@ -471,7 +494,7 @@ BOOL CoClassSymsAddSymbol(
 			 pFunction, rva, section, offset, pszSymbolName );
 	if (g_iSymbolsCount++)
 		fprintf( g_pMapFile, ",\n");
-	fprintf( g_pMapFile, "        \"%s\": { \"address\": %Iu }", pszSymbolName, rva);
+	fprintf( g_pMapFile, "                \"%s\": { \"address\": \"%#Ix\" }", pszSymbolName, rva);
 				
 	return true;
 }
