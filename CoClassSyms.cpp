@@ -224,6 +224,7 @@ void ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo_CoClass,
 						   TKIND_INTERFACE == pTypeAttr_dbg->typekind ||
 						   TKIND_DISPATCH == pTypeAttr_dbg->typekind) )
 					{
+						printf("\t>>> Parse interface #%d <<<\n", i);
 						for ( unsigned short i = 0; i < pTypeAttr_dbg->cImplTypes; i++ )
 						{
 							HREFTYPE hRefType_dbg;
@@ -245,7 +246,8 @@ void ProcessReferencedTypeInfo( LPTYPEINFO pITypeInfo_CoClass,
 								LPTYPEATTR pRefTypeAttr_dbg;
 								pIRefTypeInfo_dbg->GetTypeAttr( &pRefTypeAttr_dbg );
 
-								EnumTypeInfoMembers( pIRefTypeInfo_dbg, pRefTypeAttr_dbg, pIUnknown );
+								// EnumTypeInfoMembers( pIRefTypeInfo_dbg, pRefTypeAttr_dbg, pIUnknown );
+								EnumTypeInfoMembers( pITypeInfo_dbg, pTypeAttr_dbg, pIUnknown );
 							}
 							else
 								printf("WARNING Failed to GetRefTypeOfImplType!\n");
